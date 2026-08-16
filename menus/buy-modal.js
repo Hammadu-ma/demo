@@ -72,7 +72,7 @@ const db = getFirestore(fbApp);
 // CONFIG — edit these
 // ------------------------------------------------------------------------
 const CONFIG = {
-  bankNote: 'Send the exact amount shown below to one of the accounts, then upload your receipt.',
+  bankNote: 'Send the exact amount shown above to one of the accounts, then upload your receipt.',
   firestoreCollection: 'paymentSubmissions',
 };
 
@@ -221,6 +221,82 @@ function isPending(type, name) {
 }
 
 // ------------------------------------------------------------------------
+// Module/subject "has locked content" check — a module or subject card can
+// show as browsable/unlocked overall while one or more of its subjects/
+// quizzes are still locked for this student. Mirrors the same
+// userLocks-override rule the admin grant functions write: an explicit
+// per-student entry wins, otherwise fall back to the resource's own
+// default `locked` field.
+// ------------------------------------------------------------------------
+function effectiveLocked(docData, studentId) {
+  if (studentId && docData.userLocks && Object.prototype.hasOwnProperty.call(docData.userLocks, studentId)) {
+    return !!docData.userLocks[studentId];
+  }
+  return !!docData.locked;
+}
+
+const MODULE_LOCK_CACHE = new Map(); // "moduleName::studentId" -> Promise<boolean>
+
+async function moduleHasLockedContent(moduleName) {
+  const student = getCurrentStudent();
+  const cacheKey = `${moduleName}::${student.id || ''}`;
+  if (MODULE_LOCK_CACHE.has(cacheKey)) return MODULE_LOCK_CACHE.get(cacheKey);
+
+  const resultPromise = (async () => {
+    try {
+      const modSnap = await getDocs(query(collection(db, 'modules'), where('name', '==', moduleName), limit(1)));
+      if (!modSnap.docs.length) return false;
+      const moduleId = modSnap.docs[0].id;
+
+      const subjSnap = await getDocs(query(collection(db, 'subjects'), where('moduleId', '==', moduleId)));
+      for (const subjDoc of subjSnap.docs) {
+        const subjData = subjDoc.data();
+        if (effectiveLocked(subjData, student.id)) return true;
+        try {
+          const quizSnap = await getDocs(collection(db, 'subjects', subjDoc.id, 'quizzes'));
+          for (const qDoc of quizSnap.docs) {
+            if (effectiveLocked(qDoc.data(), student.id)) return true;
+          }
+        } catch (e) { /* no quizzes subcollection — skip */ }
+      }
+      return false;
+    } catch (e) {
+      return false;
+    }
+  })();
+
+  MODULE_LOCK_CACHE.set(cacheKey, resultPromise);
+  return resultPromise;
+}
+
+const SUBJECT_LOCK_CACHE = new Map(); // "subjectName::studentId" -> Promise<boolean>
+
+async function subjectHasLockedContent(subjectName) {
+  const student = getCurrentStudent();
+  const cacheKey = `${subjectName}::${student.id || ''}`;
+  if (SUBJECT_LOCK_CACHE.has(cacheKey)) return SUBJECT_LOCK_CACHE.get(cacheKey);
+
+  const resultPromise = (async () => {
+    try {
+      const subjSnap = await getDocs(query(collection(db, 'subjects'), where('name', '==', subjectName), limit(1)));
+      if (!subjSnap.docs.length) return false;
+      const subjectId = subjSnap.docs[0].id;
+
+      const quizSnap = await getDocs(collection(db, 'subjects', subjectId, 'quizzes'));
+      for (const qDoc of quizSnap.docs) {
+        if (effectiveLocked(qDoc.data(), student.id)) return true;
+      }
+      return false;
+    } catch (e) {
+      return false;
+    }
+  })();
+
+  SUBJECT_LOCK_CACHE.set(cacheKey, resultPromise);
+  return resultPromise;
+}
+
+// ------------------------------------------------------------------------
 // Price lookup — modules/subjects/quizzes, with global-default fallback.
 // Cached per (type,name) for the session so repeated taps don't re-query.
 // ------------------------------------------------------------------------
@@ -315,6 +391,15 @@ style.textContent = `
     display: flex; align-items: center; justify-content: center; gap: 8px;
   }
 
+  .bm-module-buy-btn {
+    position: absolute; top: 10px; right: 10px; z-index: 5;
+    width: 30px; height: 30px; border-radius: 50%;
+    border: none; background: var(--accent, var(--artery)); color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; cursor: pointer; box-shadow: 0 4px 10px -4px rgba(0,0,0,.35);
+  }
+  .bm-module-buy-btn:hover { transform: scale(1.06); }
+
   .bm-overlay {
     position: fixed; inset: 0; z-index: 10000;
     background: rgba(10, 14, 12, .55);
@@ -332,12 +417,36 @@ style.textContent = `
     border-radius: 22px 22px 0 0;
     padding: 22px 20px 26px;
     transform: translateY(24px);
-    transition: transform .22s ease;
+    transition: transform .22s ease, max-height .28s cubic-bezier(.22,1,.36,1),
+      height .28s cubic-bezier(.22,1,.36,1), border-radius .2s ease;
     font-family: 'Source Sans 3', -apple-system, BlinkMacSystemFont, sans-serif;
     color: var(--ink, #1a1a1a);
+    overscroll-behavior: contain;
   }
   @media (min-width: 640px) { .bm-card { border-radius: 20px; transform: translateY(12px) scale(.98); } }
   .bm-overlay.show .bm-card { transform: translateY(0) scale(1); }
+  .bm-overlay.bm-dragging .bm-card { transition: none; }
+
+  /* Drag handle — mobile bottom-sheet only. Tap or swipe up to expand to
+     full screen; swipe down to collapse, or close if already collapsed.
+     Content inside stays natively scrollable via overflow-y on .bm-card. */
+  .bm-drag-handle {
+    display: none; width: 100%; padding: 4px 0 14px; margin-top: -8px;
+    cursor: grab; touch-action: none;
+  }
+  .bm-drag-handle span {
+    display: block; width: 38px; height: 4px; margin: 0 auto;
+    border-radius: 4px; background: var(--card-border, #d8d8d8);
+    transition: background .15s ease;
+  }
+  .bm-drag-handle:active span { background: var(--ink-soft, #999); }
+  @media (max-width: 639px) { .bm-drag-handle { display: block; } }
+
+  .bm-card.bm-expanded {
+    max-height: 100vh; height: 100vh;
+    border-radius: 0;
+    padding-top: max(env(safe-area-inset-top), 14px);
+  }
 
   .bm-card h3 { font-family: 'Fraunces', Georgia, serif; font-size: 20px; font-weight: 700; margin-bottom: 4px; }
   .bm-sub { font-size: 13px; color: var(--ink-soft, #666); margin-bottom: 16px; }
@@ -355,10 +464,60 @@ style.textContent = `
   .bm-field { margin: 14px 0 6px; }
   .bm-field label { display: block; font-size: 12.5px; font-weight: 700; margin-bottom: 6px; }
   .bm-field input[type="text"] { width: 100%; padding: 12px 13px; border-radius: 12px; border: 1.5px solid var(--card-border, #ddd); font-size: 14px; background: var(--paper, #fff); color: inherit; font-family: inherit; }
-  .bm-upload { border: 1.5px dashed var(--card-border, #ccc); border-radius: 14px; padding: 16px; text-align: center; cursor: pointer; font-size: 13px; color: var(--ink-soft, #666); position: relative; overflow: hidden; }
-  .bm-upload.has-file { border-style: solid; border-color: var(--accent, var(--artery)); }
-  .bm-upload input[type="file"] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
-  .bm-preview { margin-top: 10px; max-width: 100%; max-height: 160px; border-radius: 10px; display: none; }
+  .bm-upload-choices { display: flex; gap: 8px; }
+  .bm-upload-choice {
+    flex: 1; border: 1.5px dashed var(--card-border, #ccc); border-radius: 14px;
+    padding: 14px 8px; text-align: center; cursor: pointer; font-size: 12.5px;
+    font-weight: 600; color: var(--ink-soft, #666); position: relative; overflow: hidden;
+  }
+  .bm-upload-choice.has-file { border-style: solid; border-color: var(--accent, var(--artery)); color: var(--accent, var(--artery)); }
+  .bm-upload-choice input[type="file"] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+
+  @keyframes bm-preview-in { from { opacity: 0; transform: scale(.96) translateY(4px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+  .bm-preview-card {
+    position: relative;
+    width: 100%;
+    height: 168px;
+    border-radius: 16px;
+    overflow: hidden;
+    background: var(--paper-2, #f4f4f4);
+    box-shadow: 0 6px 20px -8px rgba(0, 0, 0, .28), 0 0 0 1px var(--card-border, #e2e2e2) inset;
+    animation: bm-preview-in .28s cubic-bezier(.22, 1, .36, 1);
+  }
+  .bm-preview-img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .bm-preview-scrim {
+    position: absolute; left: 0; right: 0; bottom: 0; height: 62%;
+    background: linear-gradient(to top, rgba(10, 14, 12, .82), rgba(10, 14, 12, 0));
+    pointer-events: none;
+  }
+  .bm-preview-badge {
+    position: absolute; top: 10px; left: 10px;
+    width: 24px; height: 24px; border-radius: 50%;
+    background: #2fae61; color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, .25);
+  }
+  .bm-preview-remove {
+    position: absolute; top: 10px; right: 10px;
+    width: 28px; height: 28px; border-radius: 50%;
+    border: none; cursor: pointer;
+    background: rgba(20, 20, 20, .45);
+    backdrop-filter: blur(6px);
+    color: #fff; font-size: 13px;
+    display: flex; align-items: center; justify-content: center;
+    transition: background .15s ease, transform .15s ease;
+  }
+  .bm-preview-remove:hover { background: rgba(211, 72, 72, .85); transform: scale(1.06); }
+  .bm-preview-meta {
+    position: absolute; left: 12px; right: 40px; bottom: 10px;
+    color: #fff; pointer-events: none;
+  }
+  .bm-preview-name {
+    font-size: 12.5px; font-weight: 700;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .bm-preview-size { font-size: 10.5px; opacity: .8; margin-top: 1px; font-family: 'JetBrains Mono', monospace; }
 
   .bm-note { font-size: 11.5px; color: var(--ink-faint, #888); margin: 10px 0 4px; line-height: 1.4; }
 
@@ -390,6 +549,30 @@ style.textContent = `
   .bm-success i { font-size: 40px; color: #2fae61; margin-bottom: 10px; display: block; }
   .bm-error { color: #d34848; font-size: 12.5px; margin-top: 8px; display: none; }
   .bm-error.show { display: block; }
+
+  /* Skeleton loaders — used anywhere content is still being fetched
+     (amount, bank account list, lock-overlay price) instead of showing
+     raw "Loading…" text. */
+  @keyframes bm-shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+  .bm-skeleton {
+    display: inline-block;
+    background: linear-gradient(90deg, var(--paper-2, #ececec) 25%, var(--card-border, #dcdcdc) 50%, var(--paper-2, #ececec) 75%);
+    background-size: 200% 100%;
+    animation: bm-shimmer 1.3s ease-in-out infinite;
+    border-radius: 6px;
+    vertical-align: middle;
+  }
+  .bm-skeleton-amount { width: 96px; height: 21px; }
+  .bm-skeleton-bank-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 12px; border-radius: 14px;
+    border: 1.5px solid var(--card-border, #ddd); background: var(--paper, #fff);
+    margin-bottom: 8px;
+  }
+  .bm-skeleton-logo { width: 28px; height: 28px; border-radius: 8px; flex: none; }
+  .bm-skeleton-lines { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+  .bm-skeleton-line { height: 11px; width: 70%; }
+  .bm-skeleton-line.short { width: 40%; }
 `;
 document.head.appendChild(style);
 
@@ -400,6 +583,7 @@ const overlay = document.createElement('div');
 overlay.className = 'bm-overlay';
 overlay.innerHTML = `
   <div class="bm-card" role="dialog" aria-modal="true">
+    <div class="bm-drag-handle" id="bmDragHandle" aria-hidden="true"><span></span></div>
     <div id="bmStep1">
       <h3>Complete your payment</h3>
       <div class="bm-sub" id="bmOfferName"></div>
@@ -424,11 +608,26 @@ overlay.innerHTML = `
 
       <div class="bm-field">
         <label>Payment receipt</label>
-        <div class="bm-upload" id="bmUploadBox">
-          <span id="bmUploadLabel"><i class="fa-solid fa-cloud-arrow-up"></i>&nbsp; Tap to upload a screenshot or photo</span>
-          <input type="file" id="bmFileInput" accept="image/*" capture="environment" />
+        <div class="bm-upload-choices" id="bmUploadChoices">
+          <div class="bm-upload-choice" id="bmChooseFileBox">
+            <span><i class="fa-solid fa-image"></i>&nbsp; Choose from files</span>
+            <input type="file" id="bmFileInputGallery" accept="image/*" />
+          </div>
+          <div class="bm-upload-choice" id="bmTakePhotoBox">
+            <span><i class="fa-solid fa-camera"></i>&nbsp; Take photo</span>
+            <input type="file" id="bmFileInputCamera" accept="image/*" capture="environment" />
+          </div>
         </div>
-        <img class="bm-preview" id="bmPreview" alt="Receipt preview" />
+        <div class="bm-preview-card" id="bmPreviewCard" style="display:none;">
+          <img class="bm-preview-img" id="bmPreview" alt="Receipt preview" />
+          <div class="bm-preview-scrim"></div>
+          <div class="bm-preview-badge"><i class="fa-solid fa-check"></i></div>
+          <button type="button" class="bm-preview-remove" id="bmRemoveFileBtn" aria-label="Remove receipt"><i class="fa-solid fa-xmark"></i></button>
+          <div class="bm-preview-meta">
+            <div class="bm-preview-name" id="bmPreviewName"></div>
+            <div class="bm-preview-size" id="bmPreviewSize"></div>
+          </div>
+        </div>
       </div>
 
       <div class="bm-error" id="bmError"></div>
@@ -460,22 +659,34 @@ function openModal(offer) {
   activeOffer = offer;
   selectedFile = null;
   selectedBankAccountId = null;
+  overlay.querySelector('.bm-card').classList.remove('bm-expanded');
   overlay.querySelector('#bmStep1').style.display = '';
   overlay.querySelector('#bmStep2').style.display = 'none';
   overlay.querySelector('#bmOfferName').textContent = offer.name || 'This item';
-  overlay.querySelector('#bmAmount').textContent = offer.price || 'Contact for price';
+  setAmount(offer.price);
   overlay.querySelector('#bmSenderName').value = '';
-  overlay.querySelector('#bmFileInput').value = '';
-  overlay.querySelector('#bmUploadBox').classList.remove('has-file');
-  overlay.querySelector('#bmUploadLabel').innerHTML = '<i class="fa-solid fa-cloud-arrow-up"></i>&nbsp; Tap to upload a screenshot or photo';
-  overlay.querySelector('#bmPreview').style.display = 'none';
+  overlay.querySelector('#bmFileInputGallery').value = '';
+  overlay.querySelector('#bmFileInputCamera').value = '';
+  overlay.querySelector('#bmChooseFileBox').classList.remove('has-file');
+  overlay.querySelector('#bmTakePhotoBox').classList.remove('has-file');
+  overlay.querySelector('#bmUploadChoices').style.display = '';
+  overlay.querySelector('#bmPreviewCard').style.display = 'none';
   const err = overlay.querySelector('#bmError');
   err.classList.remove('show');
   err.textContent = '';
   overlay.classList.add('show');
 
   const bankList = overlay.querySelector('#bmBankList');
-  bankList.innerHTML = `<div class="bm-note">Loading accounts…</div>`;
+  bankList.innerHTML = `
+    <div class="bm-skeleton-bank-row">
+      <div class="bm-skeleton bm-skeleton-logo"></div>
+      <div class="bm-skeleton-lines"><div class="bm-skeleton bm-skeleton-line"></div><div class="bm-skeleton bm-skeleton-line short"></div></div>
+    </div>
+    <div class="bm-skeleton-bank-row">
+      <div class="bm-skeleton bm-skeleton-logo"></div>
+      <div class="bm-skeleton-lines"><div class="bm-skeleton bm-skeleton-line"></div><div class="bm-skeleton bm-skeleton-line short"></div></div>
+    </div>
+  `;
   getBankAccounts().then((accounts) => {
     if (!accounts.length) {
       bankList.innerHTML = `<div class="bm-note">No bank accounts set up yet — contact support.</div>`;
@@ -511,22 +722,110 @@ function openModal(offer) {
     });
   });
 }
-function closeModal() { overlay.classList.remove('show'); }
+function setAmount(price) {
+  const amountEl = overlay.querySelector('#bmAmount');
+  if (!price || price === 'Loading…') {
+    amountEl.innerHTML = '<span class="bm-skeleton bm-skeleton-amount"></span>';
+  } else {
+    amountEl.textContent = price;
+  }
+}
+function closeModal() { overlay.classList.remove('show'); overlay.querySelector('.bm-card').classList.remove('bm-expanded'); }
+
+// --- Mobile bottom-sheet drag handle: swipe up to expand full screen,
+// swipe down to collapse (or close, if already collapsed). A plain tap
+// on the handle also toggles expand/collapse. Only the handle itself is
+// draggable — the rest of the card keeps its normal native scrolling.
+(() => {
+  const card = overlay.querySelector('.bm-card');
+  const handle = overlay.querySelector('#bmDragHandle');
+  const CLOSE_THRESHOLD = 90;   // px dragged down while collapsed -> close
+  const TOGGLE_THRESHOLD = 40;  // px dragged -> expand/collapse
+  let startY = 0;
+  let dragging = false;
+  let moved = 0;
+
+  handle.addEventListener('touchstart', (e) => {
+    startY = e.touches[0].clientY;
+    dragging = true;
+    moved = 0;
+    overlay.classList.add('bm-dragging');
+  }, { passive: true });
+
+  handle.addEventListener('touchmove', (e) => {
+    if (!dragging) return;
+    const deltaY = e.touches[0].clientY - startY; // positive = dragging down
+    moved = deltaY;
+    // Only visually rubber-band the card when dragging down; dragging up
+    // just expands instantly via the class toggle below on touchend, no
+    // need to fight the sheet's own max-height animation mid-drag.
+    if (deltaY > 0) {
+      card.style.transform = `translateY(${Math.min(deltaY, 220)}px)`;
+    }
+  }, { passive: true });
+
+  handle.addEventListener('touchend', () => {
+    dragging = false;
+    overlay.classList.remove('bm-dragging');
+    card.style.transform = '';
+    const isExpanded = card.classList.contains('bm-expanded');
+
+    if (moved < -TOGGLE_THRESHOLD) {
+      // swiped up
+      card.classList.add('bm-expanded');
+    } else if (moved > CLOSE_THRESHOLD && !isExpanded) {
+      // swiped down far enough while already collapsed -> close
+      closeModal();
+    } else if (moved > TOGGLE_THRESHOLD) {
+      // swiped down -> collapse out of full screen
+      card.classList.remove('bm-expanded');
+    } else if (Math.abs(moved) < 6) {
+      // treated as a tap -> toggle
+      card.classList.toggle('bm-expanded');
+    }
+    moved = 0;
+  });
+})();
 
 overlay.querySelector('#bmCancelBtn').addEventListener('click', closeModal);
 overlay.querySelector('#bmDoneBtn').addEventListener('click', closeModal);
 overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
 
-overlay.querySelector('#bmFileInput').addEventListener('change', (e) => {
-  const file = e.target.files && e.target.files[0];
+function formatFileSize(bytes) {
+  if (!bytes && bytes !== 0) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function handleFileSelected(file) {
   if (!file) return;
   selectedFile = file;
-  overlay.querySelector('#bmUploadBox').classList.add('has-file');
-  overlay.querySelector('#bmUploadLabel').innerHTML = `<i class="fa-solid fa-check"></i>&nbsp; ${file.name}`;
+  overlay.querySelector('#bmUploadChoices').style.display = 'none';
+  overlay.querySelector('#bmPreviewName').textContent = file.name || 'Receipt';
+  overlay.querySelector('#bmPreviewSize').textContent = formatFileSize(file.size);
+  const previewCard = overlay.querySelector('#bmPreviewCard');
   const preview = overlay.querySelector('#bmPreview');
   const reader = new FileReader();
-  reader.onload = (ev) => { preview.src = ev.target.result; preview.style.display = 'block'; };
+  reader.onload = (ev) => {
+    preview.src = ev.target.result;
+    previewCard.style.display = '';
+  };
   reader.readAsDataURL(file);
+}
+overlay.querySelector('#bmFileInputGallery').addEventListener('change', (e) => {
+  handleFileSelected(e.target.files && e.target.files[0]);
+});
+overlay.querySelector('#bmFileInputCamera').addEventListener('change', (e) => {
+  handleFileSelected(e.target.files && e.target.files[0]);
+});
+overlay.querySelector('#bmRemoveFileBtn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  selectedFile = null;
+  overlay.querySelector('#bmFileInputGallery').value = '';
+  overlay.querySelector('#bmFileInputCamera').value = '';
+  overlay.querySelector('#bmPreviewCard').style.display = 'none';
+  overlay.querySelector('#bmUploadChoices').style.display = '';
 });
 
 function showError(msg) {
@@ -641,6 +940,68 @@ if (overlayCardEl) {
 }
 
 // ------------------------------------------------------------------------
+// Persistent Buy badge on module/subject cards that contain locked content
+// underneath — shown in addition to (not instead of) the tap-to-lock-
+// overlay flow below, since a card can look fully browsable while what's
+// inside it isn't.
+// ------------------------------------------------------------------------
+function injectContentBuyBadge(card, name, type) {
+  if (card.querySelector('.bm-module-buy-btn')) return;
+  if (getComputedStyle(card).position === 'static') card.style.position = 'relative';
+
+  const label = type === 'subject' ? 'subject' : 'module';
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'bm-module-buy-btn';
+  btn.title = `Some content in this ${label} requires purchase`;
+  btn.innerHTML = '<i class="fa-solid fa-receipt"></i>';
+  btn.addEventListener('click', async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+
+    if (isPending(type, name)) {
+      openPkgLockOverlay({ name, price: '', type, label, pending: true });
+      return;
+    }
+    openPkgLockOverlay({ name, price: 'Loading…', type, label });
+    const price = await lookupPrice(type, name);
+    const offer = { name, price, type, label };
+    pendingCardOffer = offer;
+    const msgEl = pkgLockOverlay.querySelector('#bmPkgLockMsgText');
+    if (pkgLockOverlay.classList.contains('show')) msgEl.textContent = `${name} is locked.`;
+  });
+  card.appendChild(btn);
+}
+
+function scanModuleCards() {
+  document.querySelectorAll('.module-card:not([data-bm-scanned])').forEach((card) => {
+    card.setAttribute('data-bm-scanned', '1');
+    const nameEl = card.querySelector('.module-name');
+    const name = nameEl ? nameEl.textContent.trim() : null;
+    if (!name) return;
+    moduleHasLockedContent(name).then((hasLocked) => {
+      if (hasLocked) injectContentBuyBadge(card, name, 'module');
+    });
+  });
+
+  // Subject cards that already show as locked get the full tap-to-overlay
+  // treatment below — only add the badge to ones that look open but have
+  // locked quizzes hiding inside.
+  document.querySelectorAll('.subject-card:not(.locked):not([data-bm-scanned])').forEach((card) => {
+    card.setAttribute('data-bm-scanned', '1');
+    const nameEl = card.querySelector('.subject-name');
+    const name = nameEl ? nameEl.textContent.trim() : null;
+    if (!name) return;
+    subjectHasLockedContent(name).then((hasLocked) => {
+      if (hasLocked) injectContentBuyBadge(card, name, 'subject');
+    });
+  });
+}
+new MutationObserver(() => scanModuleCards()).observe(document.body, { childList: true, subtree: true });
+scanModuleCards();
+
+// ------------------------------------------------------------------------
 // Locked CARDS everywhere — bundles, modules, subjects, quizzes, pills.
 // ------------------------------------------------------------------------
 const LOCKED_CARD_CONFIGS = [
@@ -749,6 +1110,13 @@ document.addEventListener(
       const msgEl = pkgLockOverlay.querySelector('#bmPkgLockMsgText');
       if (pkgLockOverlay.classList.contains('show')) {
         msgEl.textContent = `${offer.name} is locked.`;
+      }
+      // If the payment modal is already open for this same item (user tapped
+      // Buy before the price finished resolving), stop showing the skeleton
+      // and fill in the real amount now.
+      if (activeOffer && activeOffer.name === offer.name && activeOffer.type === offer.type) {
+        activeOffer.price = offer.price;
+        setAmount(offer.price);
       }
     });
   },
