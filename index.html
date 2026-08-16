@@ -507,6 +507,37 @@
       text-underline-offset: 2px;
     }
     .key-toggle-link:hover { color: var(--ink); }
+    .generated-key-display {
+      margin: 18px 0 10px;
+      padding: 18px 14px;
+      border-radius: 16px;
+      background: var(--paper-2);
+      border: 1px dashed var(--card-border);
+      text-align: center;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 34px;
+      font-weight: 700;
+      letter-spacing: .12em;
+      color: var(--ink);
+    }
+    .key-copy-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      width: 100%;
+      padding: 10px 14px;
+      border-radius: 12px;
+      border: 1px solid var(--card-border);
+      background: transparent;
+      color: var(--ink-soft);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background .15s ease, color .15s ease;
+    }
+    .key-copy-btn:hover { background: var(--paper-2); color: var(--ink); }
+    .key-copy-btn.copied { color: var(--correct, #1a9c5b); border-color: var(--correct, #1a9c5b); }
 
     /* ----- picker screen ----- */
     .picker-screen {
@@ -1341,6 +1372,180 @@
     }
     .continue-card .cc-resume i { font-size: 9px; transition: transform .22s var(--ease); }
     .continue-card:hover .cc-resume i { transform: translateX(3px); }
+
+    /* ----- LIVE QUIZZES SECTION ----- */
+    .live-section { display: none; }
+    .live-section.has-items { display: block; margin-bottom: 32px; }
+    .live-rail {
+      display: flex;
+      gap: 14px;
+      max-width: 1080px;
+      margin: 14px auto 0;
+      padding: 4px var(--gutter, 24px) 16px;
+      overflow-x: auto;
+      scroll-snap-type: x proximity;
+      scroll-padding-left: var(--gutter, 24px);
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: thin;
+      scrollbar-color: color-mix(in srgb, var(--ink) 20%, transparent) transparent;
+      mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 36px), transparent 100%);
+      -webkit-mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 36px), transparent 100%);
+    }
+    .live-rail::-webkit-scrollbar { height: 5px; }
+    .live-rail::-webkit-scrollbar-track { background: transparent; }
+    .live-rail::-webkit-scrollbar-thumb {
+      background: color-mix(in srgb, var(--ink) 20%, transparent);
+      border-radius: 10px;
+    }
+    .live-card {
+      scroll-snap-align: start;
+      flex: none;
+      width: 258px;
+      position: relative;
+      overflow: hidden;
+      isolation: isolate;
+      text-align: left;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 18px 18px 16px;
+      border-radius: 22px;
+      border: 2px solid #ff0000;
+      background:
+        radial-gradient(160px 100px at 100% 0%, rgba(255,0,0,.08), transparent 72%),
+        var(--card);
+      color: inherit;
+      box-shadow: 0 0 16px rgba(255,0,0,.2);
+      transition: transform .28s var(--ease), box-shadow .28s var(--ease), border-color .22s ease;
+    }
+    .live-card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 3px;
+      background: linear-gradient(90deg, #ff0000, rgba(255,0,0,.2));
+      opacity: .9;
+      animation: ql-pulse-border 1.6s ease-out infinite;
+    }
+    @keyframes ql-pulse-border {
+      0%, 100% { box-shadow: inset 0 0 0 0 rgba(255,0,0,.4); }
+      50% { box-shadow: inset 0 0 12px 0 rgba(255,0,0,.3); }
+    }
+    .live-card:hover {
+      transform: translateY(-5px);
+      border-color: #ff0000;
+      box-shadow: 0 0 24px rgba(255,0,0,.35);
+    }
+    .live-card .lc-badge {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 9px;
+      border-radius: 999px;
+      background: #ff0000;
+      color: #fff;
+      font-size: 9px;
+      font-weight: 900;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+      box-shadow: 0 2px 8px rgba(255,0,0,.4);
+    }
+    .live-card .lc-badge::before {
+      content: '';
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #fff;
+      animation: ql-dot-pulse 0.8s ease-in-out infinite;
+    }
+    .live-card .cc-top {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .live-card .cc-icon {
+      flex: none;
+      width: 38px;
+      height: 38px;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 15px;
+      background: rgba(255,0,0,.1);
+      color: #ff0000;
+    }
+    .live-card .cc-pct-badge {
+      flex: none;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10.5px;
+      font-weight: 700;
+      color: #ff0000;
+      background: rgba(255,0,0,.1);
+      border-radius: 20px;
+      padding: 4px 9px;
+      line-height: 1.4;
+    }
+    .live-card .cc-body { min-width: 0; flex: 1; }
+    .live-card .cc-subject {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 9.5px;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      color: var(--ink-faint);
+      font-weight: 700;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .live-card .cc-subject::before {
+      content: '';
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #ff0000;
+      flex: none;
+    }
+    .live-card h4 {
+      font-family: 'Fraunces', Georgia, serif;
+      font-size: 15px;
+      font-weight: 700;
+      margin: 4px 0 0;
+      line-height: 1.28;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .live-card .cc-meta {
+      font-size: 11px;
+      color: var(--ink-soft);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 5px;
+      margin-top: 8px;
+    }
+    .live-card .lc-countdown {
+      font-size: 10px;
+      font-weight: 700;
+      color: #ff0000;
+      background: rgba(255,0,0,.08);
+      padding: 3px 8px;
+      border-radius: 6px;
+    }
+    .live-card .lc-start {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-weight: 700;
+      color: #ff0000;
+    }
+    .live-card .lc-start i { font-size: 9px; }
 
     /* ----- Exclusive Offers — horizontally scrollable package/bundle cards ----- */
     .package-rail {
@@ -6787,37 +6992,30 @@
           <div class="dash-divider">or</div>
         </div>
 
-        <div class="auth-tabs hidden" id="authTabs">
-          <button class="auth-tab" data-tab="signup" id="authTabSignupBtn">Sign Up</button>
-          <button class="auth-tab" data-tab="login" id="authTabLoginBtn">Log In</button>
-          <button class="auth-tab" data-tab="key" id="authTabKeyBtn">Secret Key</button>
-        </div>
-
         <div id="keyEntryBlock">
           <h1 class="gate-centered" id="keyEntryHeading">Enter your secret key</h1>
           <label class="field-label" for="secretInput"></label>
           <input class="text-input" id="secretInput" type="text" inputmode="numeric" placeholder="e.g. 5566" autocomplete="off" />
           <button class="primary-btn" id="secretSubmit">Unlock</button>
+          <button class="key-toggle-link" id="goToSignupLink">New here? Create your account</button>
         </div>
 
         <div id="signupBlock" class="hidden">
           <h1 class="gate-centered">Create your account</h1>
           <label class="field-label" for="signupNameInput">Name</label>
-          <input class="text-input" id="signupNameInput" type="text" placeholder="Your name" autocomplete="username" />
-          <label class="field-label" for="signupPasswordInput">Password</label>
-          <input class="text-input" id="signupPasswordInput" type="password" placeholder="Choose a password" autocomplete="new-password" />
-          <label class="field-label" for="signupPasswordConfirm">Confirm password</label>
-          <input class="text-input" id="signupPasswordConfirm" type="password" placeholder="Re-enter password" autocomplete="new-password" />
+          <input class="text-input" id="signupNameInput" type="text" placeholder="Your full name" autocomplete="name" />
+          <label class="field-label" for="signupBatchInput">Batch</label>
+          <input class="text-input" id="signupBatchInput" type="text" placeholder="e.g. 2027 A" autocomplete="off" />
           <button class="primary-btn" id="signupSubmit">Create account</button>
+          <button class="key-toggle-link" id="backToKeyLink">Already have a secret key? Log in</button>
         </div>
 
-        <div id="passwordLoginBlock" class="hidden">
-          <h1 class="gate-centered">Log in to your account</h1>
-          <label class="field-label" for="loginNameInput">Name</label>
-          <input class="text-input" id="loginNameInput" type="text" placeholder="Your name" autocomplete="username" />
-          <label class="field-label" for="loginPasswordInput">Password</label>
-          <input class="text-input" id="loginPasswordInput" type="password" placeholder="Password" autocomplete="current-password" />
-          <button class="primary-btn" id="passwordLoginSubmit">Log in</button>
+        <div id="signupKeyReveal" class="hidden">
+          <h1 class="gate-centered">You're all set, <span id="signupKeyRevealName"></span>!</h1>
+          <div class="setup-note" style="text-align:center;">This secret key is the <b>only</b> way to log back in — save it somewhere safe.</div>
+          <div class="generated-key-display" id="generatedKeyDisplay"></div>
+          <button class="key-copy-btn" id="copyGeneratedKeyBtn" type="button"><i class="fa-regular fa-copy"></i> Copy key</button>
+          <button class="primary-btn" id="signupContinueBtn" style="margin-top:16px;">Continue</button>
         </div>
 
         <div class="error-msg" id="gateError"></div>
@@ -6920,6 +7118,16 @@
 
     <div class="progress-teaser" id="progressTeaser">
       <div class="progress-teaser-card"><div class="ptc-inner" id="progressTeaserInner"></div></div>
+    </div>
+
+    <div class="live-section" id="liveSection">
+      <div class="home-section-head">
+        <div>
+          <h2><i class="fa-solid fa-fire" style="color:#ff0000;margin-right:8px;"></i>Live now</h2>
+          <div class="hs-sub">Quizzes currently live — test yourself before time runs out</div>
+        </div>
+      </div>
+      <div class="live-rail" id="liveRail"></div>
     </div>
 
     <div class="continue-section" id="continueSection">
@@ -7504,7 +7712,6 @@
     <div class="action-modal-panel" id="actionModalPanel"></div>
   </div>
 
-<script type="module" src="menus/student-auth.js"></script>
 <script type="module" src="menus/buy-modal.js"></script>
 <script type="module" src="menus/quiz-live.js"></script>
 <script type="module" src="menus/main.js"></script>
