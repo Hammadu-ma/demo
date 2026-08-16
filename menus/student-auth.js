@@ -170,16 +170,27 @@ function wireSignupForm() {
   if (signupBlock.dataset.saTakenOver) return; // already wired
   signupBlock.dataset.saTakenOver = '1';
 
-  // Hide the password fields — no longer needed for signup.
+  // Hide the password fields — no longer needed for signup. IMPORTANT: we
+  // hide rather than remove() them. gate-screen.js (loaded later, inside
+  // main.js) does its own getElementById('signupPasswordInput') /
+  // getElementById('signupPasswordConfirm') at module-init time and then
+  // unconditionally calls .addEventListener on whatever it gets back. If
+  // we've already removed these nodes from the DOM by the time that runs,
+  // it gets null and throws (Cannot read properties of null, reading
+  // 'addEventListener'). Keeping the (now-empty, invisible) elements in
+  // place keeps gate-screen.js's own wiring happy; our click-capture
+  // handler on signupSubmit still fully owns the signup flow regardless.
   if (passwordInput) {
     const pwLabel = passwordInput.previousElementSibling;
-    if (pwLabel && pwLabel.tagName === 'LABEL') pwLabel.remove();
-    passwordInput.remove();
+    if (pwLabel && pwLabel.tagName === 'LABEL') pwLabel.style.display = 'none';
+    passwordInput.style.display = 'none';
+    passwordInput.removeAttribute('required');
   }
   if (confirmInput) {
     const confirmLabel = confirmInput.previousElementSibling;
-    if (confirmLabel && confirmLabel.tagName === 'LABEL') confirmLabel.remove();
-    confirmInput.remove();
+    if (confirmLabel && confirmLabel.tagName === 'LABEL') confirmLabel.style.display = 'none';
+    confirmInput.style.display = 'none';
+    confirmInput.removeAttribute('required');
   }
 
   // Add a Batch field, matching the admin's own "add student" fields.
