@@ -1,0 +1,1 @@
+!function(){const e=localStorage.getItem("atlas_theme_pref");let t=!1;t="dark"===e||"light"!==e&&window.matchMedia("(prefers-color-scheme: dark)").matches,t&&document.body.classList.add("dark");const o=document.querySelector('meta[name="theme-color"]');o&&o.setAttribute("content",t?"#0A1512":"#F4F7F5")}();
