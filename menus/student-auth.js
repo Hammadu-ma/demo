@@ -274,9 +274,16 @@ function wireSignupForm() {
 
       setCurrentStudentGlobal(user.uid, name);
 
-      // Hand off to the app's normal screen transition.
-      document.getElementById('gateScreen')?.classList.add('hidden');
-      document.getElementById('homeScreen')?.classList.remove('hidden');
+      // Hand off to the app. We can't call the obfuscated app's real
+      // showHome()/showPicker() transition directly (it's not exported
+      // from gate-screen.js), and just toggling .hidden classes leaves an
+      // uninitialized home screen behind — looks like nothing happened.
+      // Reloading is the reliable option: window.currentStudent and
+      // localStorage.studentId are already set above, so the app boots
+      // fresh and picks the account up through its normal "existing
+      // student" path.
+      window.location.reload();
+      return;
     } catch (err) {
       console.error('[student-auth] signup failed', err);
       if (errorEl) errorEl.textContent = 'Something went wrong creating your account. Please try again.';
@@ -350,8 +357,11 @@ function wireLoginForm() {
 
       setCurrentStudentGlobal(legacyId, matched.data().name);
 
-      document.getElementById('gateScreen')?.classList.add('hidden');
-      document.getElementById('homeScreen')?.classList.remove('hidden');
+      // Same reasoning as signup: reload so the app's own boot logic picks
+      // up the now-linked account, rather than us trying to fake the real
+      // showHome()/showPicker() transition.
+      window.location.reload();
+      return;
     } catch (err) {
       console.error('[student-auth] login failed', err);
       if (errorEl) errorEl.textContent = 'Something went wrong logging in. Please try again.';
