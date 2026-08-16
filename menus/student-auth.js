@@ -13,14 +13,23 @@
    ============================================================================
    DESIGN — why nobody's existing access gets touched
    ============================================================================
-   - NEW signups: the "Create account" form now asks for Name + Batch only
-     (no password). On submit, this signs them in anonymously with real
-     Firebase Auth (auth().currentUser.uid is a genuine Firebase-issued
-     UID) and creates `secretkeys/{uid}` — their UID *is* their student ID
-     from day one. A secret key is still auto-generated and stored on their
-     doc (field `secretKey`) purely for your own reference/matching in the
-     admin panel — it is never shown to the student and is not used as
-     their doc ID.
+   - NEW signups: the "Create account" form asks for Name, Password, and
+     Batch. On submit, this signs them in anonymously with real Firebase
+     Auth (auth().currentUser.uid is a genuine Firebase-issued UID) and
+     creates `secretkeys/{uid}` — their UID *is* their student ID from day
+     one. The password is hashed (SHA-256, client-side — there's no backend
+     here, same trust model as the app's existing secret-key system) and
+     stored as `passwordHash` so they can log back in from another device
+     via the existing "Log In" tab (Name + Password). A secret key is still
+     auto-generated and stored on their doc (field `secretKey`) purely for
+     your own reference/matching in the admin panel — it is never shown to
+     the student and is not used as their doc ID.
+
+   - LOG IN (existing "Log In" tab, Name + Password): looks up
+     `secretkeys` for a doc whose `name` and `passwordHash` match, then
+     links this browser's Firebase UID to that doc's id via
+     `studentAuthLinks` (same mechanism as the "existing students" case
+     below) — the legacy id and doc are never renamed or migrated.
 
    - EXISTING students (secret key login, password login, or the earlier
      device-ID-based guest flow from buy-modal.js): their existing
@@ -57,6 +66,7 @@ import {
 } from 'https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js';
 import {
   getFirestore, doc, getDoc, setDoc, serverTimestamp,
+  collection, query, where, getDocs,
 } from 'https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js';
 
 const firebaseConfig = {
@@ -90,6 +100,15 @@ function getLegacyStudentId() {
 
 function randomSecretKey() {
   return Math.random().toString(36).slice(2, 8).toUpperCase();
+}
+
+// Client-side hash only — good enough to avoid storing plaintext passwords
+// in a doc that's readable from the admin panel, NOT a substitute for real
+// server-side auth. There's no backend here, so this is the same trust
+// model the app's existing secret-key system already uses.
+async function sha256Hex(text) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 function setCurrentStudentGlobal(id, name) {
@@ -170,21 +189,19 @@ function wireSignupForm() {
   if (signupBlock.dataset.saTakenOver) return; // already wired
   signupBlock.dataset.saTakenOver = '1';
 
-  // Hide the password fields — no longer needed for signup. IMPORTANT: we
-  // hide rather than remove() them. gate-screen.js (loaded later, inside
-  // main.js) does its own getElementById('signupPasswordInput') /
+  // Password: keep this ONE field (signupPasswordInput) visible and
+  // required. Hide only the confirm field — we don't ask users to type
+  // their password twice. IMPORTANT: hide, don't remove(). gate-screen.js
+  // (loaded later, inside main.js) does its own
   // getElementById('signupPasswordConfirm') at module-init time and then
-  // unconditionally calls .addEventListener on whatever it gets back. If
-  // we've already removed these nodes from the DOM by the time that runs,
-  // it gets null and throws (Cannot read properties of null, reading
-  // 'addEventListener'). Keeping the (now-empty, invisible) elements in
-  // place keeps gate-screen.js's own wiring happy; our click-capture
-  // handler on signupSubmit still fully owns the signup flow regardless.
+  // unconditionally calls .addEventListener on whatever it gets back — if
+  // that node is gone by then, it throws (Cannot read properties of null,
+  // reading 'addEventListener'). Keeping the (empty, invisible) node in
+  // place keeps gate-screen.js's own wiring happy.
   if (passwordInput) {
     const pwLabel = passwordInput.previousElementSibling;
-    if (pwLabel && pwLabel.tagName === 'LABEL') pwLabel.style.display = 'none';
-    passwordInput.style.display = 'none';
-    passwordInput.removeAttribute('required');
+    if (pwLabel && pwLabel.tagName === 'LABEL') pwLabel.textContent = 'Password';
+    passwordInput.placeholder = 'Choose a password';
   }
   if (confirmInput) {
     const confirmLabel = confirmInput.previousElementSibling;
@@ -217,12 +234,17 @@ function wireSignupForm() {
     e.stopImmediatePropagation();
 
     const name = nameInput.value.trim();
+    const password = passwordInput ? passwordInput.value : '';
     const batch = document.getElementById('signupBatchInput')?.value.trim() || '';
     const errorEl = document.getElementById('gateError');
     if (errorEl) errorEl.textContent = '';
 
     if (!name) {
       if (errorEl) errorEl.textContent = 'Please enter your name.';
+      return;
+    }
+    if (!password || password.length < 4) {
+      if (errorEl) errorEl.textContent = 'Please choose a password (at least 4 characters).';
       return;
     }
 
@@ -238,13 +260,16 @@ function wireSignupForm() {
         user = cred.user;
       }
 
+      const passwordHash = await sha256Hex(password);
+
       await setDoc(doc(db, 'secretkeys', user.uid), {
         name,
         batch,
+        passwordHash,
         secretKey: randomSecretKey(), // internal reference only — never shown
         userLocks: {},
         createdAt: serverTimestamp(),
-        authMethod: 'anonymous',
+        authMethod: 'anonymous+password',
       }, { merge: true });
 
       setCurrentStudentGlobal(user.uid, name);
@@ -262,8 +287,80 @@ function wireSignupForm() {
   }, true);
 }
 
-new MutationObserver(wireSignupForm).observe(document.body, { childList: true, subtree: true });
+new MutationObserver(() => { wireSignupForm(); wireLoginForm(); }).observe(document.body, { childList: true, subtree: true });
 wireSignupForm();
+wireLoginForm();
+
+// ------------------------------------------------------------------------
+// Log In form takeover — Name + Password, checked against the passwordHash
+// stored at signup. On match: sign in anonymously (if needed), link this
+// browser's Firebase UID to the matched legacy id via studentAuthLinks
+// (same mechanism used for existing students), then hand off like signup.
+// ------------------------------------------------------------------------
+function wireLoginForm() {
+  const nameInput = document.getElementById('loginNameInput');
+  const passwordInput = document.getElementById('loginPasswordInput');
+  const submitBtn = document.getElementById('passwordLoginSubmit');
+  const loginBlock = document.getElementById('passwordLoginBlock');
+  if (!nameInput || !passwordInput || !submitBtn || !loginBlock) return; // not in DOM yet
+  if (loginBlock.dataset.saTakenOver) return; // already wired
+  loginBlock.dataset.saTakenOver = '1';
+
+  submitBtn.addEventListener('click', async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+
+    const name = nameInput.value.trim();
+    const password = passwordInput.value;
+    const errorEl = document.getElementById('gateError');
+    if (errorEl) errorEl.textContent = '';
+
+    if (!name || !password) {
+      if (errorEl) errorEl.textContent = 'Please enter your name and password.';
+      return;
+    }
+
+    submitBtn.disabled = true;
+    const originalLabel = submitBtn.textContent;
+    submitBtn.textContent = 'Logging in…';
+
+    try {
+      const passwordHash = await sha256Hex(password);
+
+      const q = query(collection(db, 'secretkeys'), where('name', '==', name), where('passwordHash', '==', passwordHash));
+      const snap = await getDocs(q);
+      if (snap.empty) {
+        if (errorEl) errorEl.textContent = 'No account found with that name and password.';
+        return;
+      }
+      const matched = snap.docs[0];
+      const legacyId = matched.id;
+
+      await authReady;
+      let user = auth.currentUser;
+      if (!user) {
+        const cred = await signInAnonymously(auth);
+        user = cred.user;
+      }
+
+      if (legacyId !== user.uid) {
+        await ensureAuthLinkForLegacyStudent(user.uid, legacyId);
+      }
+
+      setCurrentStudentGlobal(legacyId, matched.data().name);
+
+      document.getElementById('gateScreen')?.classList.add('hidden');
+      document.getElementById('homeScreen')?.classList.remove('hidden');
+    } catch (err) {
+      console.error('[student-auth] login failed', err);
+      if (errorEl) errorEl.textContent = 'Something went wrong logging in. Please try again.';
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.textContent = originalLabel;
+    }
+  }, true);
+}
 
 // ------------------------------------------------------------------------
 // Soft email-upgrade prompt — shown once per session, dismissible, only
